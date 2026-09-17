@@ -9,6 +9,7 @@ import (
 	"github.com/treepeck/justchess/pkg/db"
 
 	"github.com/treepeck/coordinator/internal/ws"
+	"github.com/treepeck/coordinator/internal/transport"
 )
 
 func main() {
@@ -34,10 +35,18 @@ func main() {
 	authService := auth.NewService(cookieKey, ar)
 
 	wsService := ws.InitService()
+	transportService, err := transport.InitService()
+	if err != nil {
+		log.Panic(err)
+	}
 
 	// Register routes.
 	mux := http.NewServeMux()
 	wsService.RegisterRoutes(authService, mux)
+
+	if err := transportService.OpenSocket(); err != nil {
+		log.Panic(err)
+	}
 
 	log.Print("Starting server.")
 	log.Panic(http.ListenAndServe(":8888", mux))

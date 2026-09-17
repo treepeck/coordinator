@@ -51,6 +51,8 @@ func initClient(id string, conn *websocket.Conn, out chan *client) *client {
 	return c
 }
 
+// TODO: play with buffered IO to reduce the amount of syscalls.
+
 func (c *client) read() {
 	for {
 		msgType, raw, err := c.conn.ReadMessage()

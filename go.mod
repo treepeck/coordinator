@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/treepeck/justchess v0.0.0-20260907151215-c0a838f02562
+	github.com/treepeck/justchess v0.0.0-20260917163114-efa7b846de57
 )
 
 require (
