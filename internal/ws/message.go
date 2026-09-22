@@ -10,8 +10,9 @@ const (
 )
 
 type message struct {
-	Kind    messageKind     `json:"k"`
-	Payload json.RawMessage `json:"p"`
+	clientId string          `json:"-"`
+	Payload  json.RawMessage `json:"p"`
+	Kind     messageKind     `json:"k"`
 }
 
 func mustEncode(k messageKind, p json.RawMessage) json.RawMessage {

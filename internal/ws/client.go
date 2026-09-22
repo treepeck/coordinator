@@ -26,8 +26,10 @@ type client struct {
 	// between multiple concurrent writers. The "gorilla/websocket"
 	// package allows only one concurrent writer at time.
 	send chan []byte
+	// Publish inbound message to server.
+	inbound chan message
 	// Notify the server about disconnection.
-	out chan *client
+	leave chan *client
 	// Network latency in milliseconds. It is reported by client so
 	// shoudln't be trusted. Used only to render the UI connection bar.
 	// In milliseconds.
@@ -36,12 +38,13 @@ type client struct {
 
 // initClient initializes the client, sets the connection properties,
 // and runs the client's goroutines.
-func initClient(id string, conn *websocket.Conn, out chan *client) *client {
+func initClient(id string, conn *websocket.Conn, leave chan *client, inbound chan message) *client {
 	c := &client{
-		id:   id,
-		conn: conn,
-		send: make(chan []byte, 256),
-		out:  out,
+		id:      id,
+		conn:    conn,
+		send:    make(chan []byte, 256),
+		leave:   leave,
+		inbound: inbound,
 	}
 
 	c.conn.SetReadLimit(maxMessageSize)
@@ -86,9 +89,11 @@ func (c *client) read() {
 				break
 			}
 		default:
-			c.send <- raw
+			msg.clientId = c.id
+			c.inbound <- msg
 		}
 	}
+	// It's safe to close the connection multiple times.
 	c.conn.Close()
 }
 
@@ -146,9 +151,8 @@ func (c *client) write() {
 			break
 		}
 	}
-	// It's safe to close the connection multiple times.
-	c.conn.Close()
-	c.out <- c
+
+	c.cleanup()
 }
 
 func (c *client) handlePing(payload json.RawMessage) error {
@@ -159,4 +163,9 @@ func (c *client) handlePing(payload json.RawMessage) error {
 	c.reportedLatency = latency
 	c.send <- nil
 	return nil
+}
+
+func (c *client) cleanup() {
+	c.conn.Close()
+	c.leave <- c
 }

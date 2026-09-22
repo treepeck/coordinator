@@ -21,6 +21,7 @@ type socket struct {
 	reader     *bufio.Reader
 	writer     *bufio.Writer
 	pingTicker *time.Ticker
+	send     chan proto.InMessage
 	// Network latency in milliseconds.
 	latency  *atomic.Int64
 	lastPing *atomic.Int64
@@ -39,6 +40,7 @@ func initSocket(conn *net.TCPConn) *socket {
 		reader:     r,
 		writer:     w,
 		pingTicker: time.NewTicker(pingInterval),
+		send:       make(chan proto.InMessage, 256),
 		latency:    &atomic.Int64{},
 		lastPing:   &atomic.Int64{},
 	}
@@ -47,19 +49,19 @@ func initSocket(conn *net.TCPConn) *socket {
 	s.latency.Store(1)
 	s.lastPing.Store(time.Now().UnixMilli())
 
-	go s.listen()
-	go s.heartbeat()
+	go s.read()
+	go s.write()
 
 	return s
 }
 
-// listen is designed to run as a goroutine to continuously
-// consume new messages from the connection.
-func (s *socket) listen() {
+// read is designed to run as a goroutine to continuously
+// consume messages from the connection.
+func (s *socket) read() {
 	defer s.cleanup()
 
 	for {
-		var msg proto.Message
+		var msg proto.OutMessage
 		if err := s.decoder.Decode(&msg); err != nil {
 			log.Printf("decode error: %v\n", err)
 			break
@@ -81,22 +83,28 @@ func (s *socket) listen() {
 	}
 }
 
-// heartbeat is designed to run as a goroutine to periodically
-// send Ping messages to game server to maintain the connection
-// health.
-func (s *socket) heartbeat() {
+// write is designed to run as a goroutine to continuously write messages
+// to the connection. Additionaly, it periodically send Ping messages to
+// maintain the connection health.
+func (s *socket) write() {
 	for {
-		<-s.pingTicker.C
-		// TODO: close the connection if previous ping was not answered.
-		msg := proto.Message{
-			Payload: proto.Ping(s.latency.Load()),
+		var msg proto.InMessage
+
+		select {
+		case <-s.pingTicker.C:
+			// TODO: close the connection if previous ping was not answered.
+			msg.Payload = proto.Ping(s.latency.Load())
+			log.Printf("ping")
+			s.lastPing.Store(time.Now().UnixMilli())
+
+		case m := <-s.send:
+			msg = m
 		}
+
 		if err := s.encoder.Encode(msg); err != nil {
 			break
 		}
 		s.writer.Flush()
-		log.Printf("ping")
-		s.lastPing.Store(time.Now().UnixMilli())
 	}
 }
 

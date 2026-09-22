@@ -8,14 +8,17 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 )
 
 // Service manages the dynamic pool of TCP connections with the JustChess server.
 type Service struct {
-	sync.Mutex
-	addr net.IP
-	port int
+	addr  net.IP
+	Write chan proto.InMessage
+	Read  chan proto.OutMessage
+	Open  chan chan error
+	Close chan chan error
+	Poke  chan chan int
+	port  int
 	// Set of active [socket]s.
 	sockets map[*socket]struct{}
 }
@@ -35,40 +38,56 @@ func InitService() (Service, error) {
 	gob.Register(proto.Ping(0))
 	gob.Register(proto.Pong(0))
 
-	return Service{
+	s := Service{
 		addr:    addr,
 		port:    port,
+		Open:    make(chan chan error),
+		Close:   make(chan chan error),
+		Poke:    make(chan chan int),
+		Write:   make(chan proto.InMessage, 256),
+		Read:    make(chan proto.OutMessage, 256),
 		sockets: make(map[*socket]struct{}, proto.MaxConns),
-	}, nil
-}
-
-func (s Service) OpenSocket() error {
-	s.Lock()
-	defer s.Unlock()
-
-	if len(s.sockets) == proto.MaxConns {
-		return errors.New("connection limit reached")
 	}
 
-	c, err := net.DialTCP("tcp", nil, &net.TCPAddr{
+	go s.listen()
+
+	return s, nil
+}
+
+func (s Service) listen() {
+	for {
+		select {
+		case res := <-s.Open:
+			s.openSocket(res)
+		case res := <-s.Close:
+			s.closeSocket(res)
+		case m := <-s.Write:
+			s.writeSocket(m)
+		}
+	}
+}
+
+func (s Service) openSocket(res chan<- error) {
+	if len(s.sockets) == proto.MaxConns {
+		res <- errors.New("transport: connection limit reached")
+	}
+
+	conn, err := net.DialTCP("tcp", nil, &net.TCPAddr{
 		IP:   s.addr,
 		Port: s.port,
 	})
 	if err != nil {
-		return err
+		res <- err
+		return
 	}
 
-	sock := initSocket(c)
+	sock := initSocket(conn)
 	s.sockets[sock] = struct{}{}
 	log.Printf("open %v socket\n", sock)
-	return nil
 }
 
-// CloseSocket closes a socket with a highest latency value.
-func (s Service) CloseSocket() error {
-	s.Lock()
-	defer s.Unlock()
-
+// closeSocket closes a socket with a highest latency value.
+func (s Service) closeSocket(res chan<- error) {
 	var slowest *socket
 	for sock := range s.sockets {
 		if slowest == nil || sock.latency.Load() > slowest.latency.Load() {
@@ -76,9 +95,30 @@ func (s Service) CloseSocket() error {
 		}
 	}
 	if slowest == nil {
-		return errors.New("no opened sockets")
+		res <- errors.New("transport: no opened sockets")
 	}
 	delete(s.sockets, slowest)
 	log.Printf("close %v socket\n", slowest)
-	return slowest.conn.Close()
+	res <- slowest.conn.Close()
+}
+
+func (s Service) writeSocket(m proto.InMessage) {
+	// TODO: proper load balancing between sockets.
+	// Right now simply find socket with the lowest latency and write message to it.
+	var fastest *socket
+	for sock := range s.sockets {
+		if fastest == nil || sock.latency.Load() < fastest.latency.Load() {
+			fastest = sock
+		}
+	}
+	if fastest == nil {
+		return
+	}
+
+	fastest.send <- m
+
+	// If there are more than one message awaiting delivery, send them in batch.
+	for range len(s.Write) {
+		fastest.send <- <-s.Write
+	}
 }
