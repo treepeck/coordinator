@@ -14,6 +14,7 @@ const (
 	pingInterval = 5 * time.Second
 )
 
+// TODO: Reconnect.
 type socket struct {
 	conn       *net.TCPConn
 	encoder    *gob.Encoder
@@ -21,7 +22,7 @@ type socket struct {
 	reader     *bufio.Reader
 	writer     *bufio.Writer
 	pingTicker *time.Ticker
-	send     chan proto.InMessage
+	send       chan proto.InMessage
 	// Network latency in milliseconds.
 	latency  *atomic.Int64
 	lastPing *atomic.Int64
@@ -102,6 +103,7 @@ func (s *socket) write() {
 		}
 
 		if err := s.encoder.Encode(msg); err != nil {
+			log.Printf("cannot encode message: %v\n", err)
 			break
 		}
 		s.writer.Flush()

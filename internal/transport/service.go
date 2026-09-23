@@ -10,15 +10,28 @@ import (
 	"strconv"
 )
 
+// Ipc wraps all channels used for inter-process communication between [transport]
+// and [ws] packages.
+type Ipc struct {
+	// Open is used to add a new TCP connection. The [chan int] returns the number
+	//  of active TCP connections. Special case -1, which indicates an error.
+	Open chan chan int
+	// Close is used to remove an opened TCP connection. Connection with the biggest
+	// latency will be removed. The [chan int] returns the number of active TCP
+	// connections. Special case -1, which indicates an error.
+	// TODO: might want to delete the least used connection.
+	Close chan chan int
+	// Write is used to write messages to TCP connection pool.
+	Write chan proto.InMessage
+	// Read is used to read messages from TCP connection pool.
+	Read chan proto.OutMessage
+}
+
 // Service manages the dynamic pool of TCP connections with the JustChess server.
 type Service struct {
-	addr  net.IP
-	Write chan proto.InMessage
-	Read  chan proto.OutMessage
-	Open  chan chan error
-	Close chan chan error
-	Poke  chan chan int
-	port  int
+	addr net.IP
+	Ipc  Ipc
+	port int
 	// Set of active [socket]s.
 	sockets map[*socket]struct{}
 }
@@ -37,15 +50,18 @@ func InitService() (Service, error) {
 	// TODO: maybe extract it to some other place.
 	gob.Register(proto.Ping(0))
 	gob.Register(proto.Pong(0))
+	gob.Register(proto.Join(""))
+	gob.Register(proto.Leave(""))
 
 	s := Service{
+		Ipc: Ipc{
+			Open:  make(chan chan int),
+			Close: make(chan chan int),
+			Write: make(chan proto.InMessage, 256),
+			Read:  make(chan proto.OutMessage, 256),
+		},
 		addr:    addr,
 		port:    port,
-		Open:    make(chan chan error),
-		Close:   make(chan chan error),
-		Poke:    make(chan chan int),
-		Write:   make(chan proto.InMessage, 256),
-		Read:    make(chan proto.OutMessage, 256),
 		sockets: make(map[*socket]struct{}, proto.MaxConns),
 	}
 
@@ -55,21 +71,25 @@ func InitService() (Service, error) {
 }
 
 func (s Service) listen() {
+	// TODO: defer s.cleanup() to close all conns.
+
 	for {
 		select {
-		case res := <-s.Open:
+		case res := <-s.Ipc.Open:
 			s.openSocket(res)
-		case res := <-s.Close:
+		case res := <-s.Ipc.Close:
 			s.closeSocket(res)
-		case m := <-s.Write:
+		case m := <-s.Ipc.Write:
 			s.writeSocket(m)
 		}
 	}
 }
 
-func (s Service) openSocket(res chan<- error) {
+func (s Service) openSocket(res chan<- int) {
 	if len(s.sockets) == proto.MaxConns {
-		res <- errors.New("transport: connection limit reached")
+		log.Print("TCP connection limit reached")
+		res <- -1
+		return
 	}
 
 	conn, err := net.DialTCP("tcp", nil, &net.TCPAddr{
@@ -77,17 +97,20 @@ func (s Service) openSocket(res chan<- error) {
 		Port: s.port,
 	})
 	if err != nil {
-		res <- err
+		log.Printf("cannot open TCP connection: %v\n", err)
+		res <- -1
 		return
 	}
 
 	sock := initSocket(conn)
 	s.sockets[sock] = struct{}{}
-	log.Printf("open %v socket\n", sock)
+	log.Printf("opened new TCP socket %v\n", sock)
+
+	res <- len(s.sockets)
 }
 
 // closeSocket closes a socket with a highest latency value.
-func (s Service) closeSocket(res chan<- error) {
+func (s Service) closeSocket(res chan<- int) {
 	var slowest *socket
 	for sock := range s.sockets {
 		if slowest == nil || sock.latency.Load() > slowest.latency.Load() {
@@ -95,11 +118,15 @@ func (s Service) closeSocket(res chan<- error) {
 		}
 	}
 	if slowest == nil {
-		res <- errors.New("transport: no opened sockets")
+		log.Print("no active TCP sockets")
+		res <- -1
+		return
 	}
 	delete(s.sockets, slowest)
-	log.Printf("close %v socket\n", slowest)
-	res <- slowest.conn.Close()
+	slowest.conn.Close() // TODO: might want to handle error.
+	log.Printf("closed TCP socket %v\n", slowest)
+
+	res <- len(s.sockets)
 }
 
 func (s Service) writeSocket(m proto.InMessage) {
@@ -112,13 +139,14 @@ func (s Service) writeSocket(m proto.InMessage) {
 		}
 	}
 	if fastest == nil {
+		log.Print("no active TCP sockets")
 		return
 	}
 
 	fastest.send <- m
 
 	// If there are more than one message awaiting delivery, send them in batch.
-	for range len(s.Write) {
-		fastest.send <- <-s.Write
+	for range len(s.Ipc.Write) {
+		fastest.send <- <-s.Ipc.Write
 	}
 }

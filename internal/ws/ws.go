@@ -2,7 +2,9 @@ package ws
 
 import (
 	"github.com/gorilla/websocket"
+	"github.com/treepeck/coordinator/internal/transport"
 	"github.com/treepeck/justchess/pkg/auth"
+	"github.com/treepeck/justchess/pkg/db"
 	"github.com/treepeck/justchess/pkg/proto"
 	"log"
 	"net/http"
@@ -32,38 +34,32 @@ type joinReq struct {
 // stores the connection object. All subsequent interaction between the client and
 // [Service] occurs outside the scope of the handshake handler.
 type Service struct {
-	// TODO: store which clients are subscribed to which topics.
-	clients map[*client]struct{}
+	// clients maps [client] to the URL they are connected to.
+	clients map[*client]string
+	ipc     transport.Ipc
 	// Inbout WebSocket messages.
 	inbound chan message
-	// open is used to add a new TCP connection.
-	open chan chan error
-	// close is used to remove an opened TCP connection.
-	close chan chan error
-	// poke is used to get the number of opened TCP connections.
-	poke chan chan int
-	// write is used to write messages to TCP connection pool.
-	write chan proto.InMessage
-	// read is used to read messages from TCP connection pool.
-	read chan proto.OutMessage
 	// Incomming connections.
 	join chan joinReq
 	// Disconnected clients.
 	leave chan *client
+	// Estimated amount of active TCP connections.
+	// TODO: might want to get rid of it and use len(ws.Service.sockets) somehow.
+	// The problem is that len(ws.Service.sockets) is not safe for concurrent use.
+	// One idea is to pass atomic.Int32 (TCP conn counter) in ipc struct.
+	tcpConnsCache int
 }
 
 // InitService creates a new service and runs it's internal goroutines.
-func InitService(open, close chan chan error, poke chan chan int, write chan proto.InMessage, read chan proto.OutMessage) Service {
+func InitService(gameRepo db.SQLGameRepo, ipc transport.Ipc) Service {
 	s := Service{
-		clients: make(map[*client]struct{}, maxClients),
+		clients: make(map[*client]string, maxClients),
 		inbound: make(chan message),
 		join:    make(chan joinReq),
 		leave:   make(chan *client),
-		open:    open,
-		close:   close,
-		poke: 	poke,
-		write:   write,
-		read:    read,
+		ipc:     ipc,
+		// Single TCP connection is opened during initialization.
+		tcpConnsCache: 1,
 	}
 	go s.listen()
 	go s.publish()
@@ -72,6 +68,7 @@ func InitService(open, close chan chan error, poke chan chan int, write chan pro
 }
 
 func (s Service) RegisterRoutes(authService auth.Service, mux *http.ServeMux) {
+	// TODO: might want to have different endpoints for queue, player, and game spectator.
 	mux.HandleFunc("GET /handshake", authService.MustAuthorize(s.handshake))
 }
 
@@ -106,7 +103,7 @@ func (s Service) listen() {
 func (s Service) publish() {
 	for {
 		m := <-s.inbound
-		s.write <- proto.InMessage{
+		s.ipc.Write <- proto.InMessage{
 			PlayerId: m.clientId,
 			Payload:  m.Payload,
 		}
@@ -116,7 +113,7 @@ func (s Service) publish() {
 // route routes outbound messages to WebSocket [client]s.
 func (s Service) route() {
 	for {
-		m := <-s.read
+		m := <-s.ipc.Read
 		log.Printf("recieved message from TCP conn: %v\n", m)
 	}
 }
@@ -132,18 +129,10 @@ func (s Service) register(req joinReq) {
 		return
 	}
 
-	// Open new connection whenever [proto.ClientsPerConn] limit is exceeded.
-	tcpConns := make(chan int)
-	s.poke <- tcpConns
-	if len(s.clients) / proto.ClientsPerConn > <-tcpConns {
-		res := make(chan error)
-		s.open <- res
-		if err := <-res; err != nil {
-			log.Print(err)
-			return
-		}
-	}
+	// TODO: discard the connection if TCP cannot be adjusted.
+	s.adjustTCPConns()
 
+	url := req.r.URL.String()
 	conn, err := upgrader.Upgrade(req.rw, req.r, nil)
 	if err != nil {
 		log.Printf("error while trying to upgrade the connection: %v\n", err)
@@ -151,11 +140,57 @@ func (s Service) register(req joinReq) {
 	}
 
 	c := initClient(req.id, conn, s.leave, s.inbound)
-	s.clients[c] = struct{}{}
+	s.clients[c] = url
+
+	// Notify JustChess about player connection.
+	s.ipc.Write <- proto.InMessage{
+		PlayerId: req.id,
+		Payload: proto.Join(url),
+	}
+
+	log.Printf("register client %s\n", c.id)
 }
 
 func (s Service) unregister(c *client) {
+	url, ok := s.clients[c]
+	if !ok {
+		log.Printf("client %s is not registered but is being unregistered\n", c.id)
+		return
+	}
+
 	delete(s.clients, c)
 
-	// Close unnecessary connections to free resourses.
+	s.adjustTCPConns()
+
+	// Notify JustChess about player disconnection.
+	s.ipc.Write <- proto.InMessage{
+		PlayerId: c.id,
+		Payload: proto.Leave(url),
+	}
+
+	log.Printf("unregister client %s\n", c.id)
+}
+
+// adjustTCPConns adjusts the amount of opened TCP connections to the amount
+// of active clients.
+func (s Service) adjustTCPConns() {
+	coeff := len(s.clients) / proto.ClientsPerConn
+	if coeff == 0 || coeff == s.tcpConnsCache {
+		return
+	}
+
+	res := make(chan int, 1)
+
+	if coeff > s.tcpConnsCache {
+		// Close unnecessary connection.
+		s.ipc.Close <- res
+	} else {
+		// Open connection.
+		s.ipc.Open <- res
+	}
+
+	conns := <-res
+	if conns != -1 {
+		s.tcpConnsCache = conns
+	}
 }

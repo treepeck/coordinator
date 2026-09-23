@@ -18,8 +18,7 @@ const (
 // process of reading and writing messages for a single connection.
 // It also stores the network delay calculated during "hearbeat".
 type client struct {
-	// id is stored to identify the "User model" that stands behind the
-	// connection.
+	// id is stored to identify the "User model" that stands behind the connection.
 	id   string
 	conn *websocket.Conn
 	// Buffered channel of outbound messages. Used to prevent race condition
@@ -93,8 +92,7 @@ func (c *client) read() {
 			c.inbound <- msg
 		}
 	}
-	// It's safe to close the connection multiple times.
-	c.conn.Close()
+	c.cleanup()
 }
 
 func (c *client) write() {
@@ -152,7 +150,7 @@ func (c *client) write() {
 		}
 	}
 
-	c.cleanup()
+	c.conn.Close()
 }
 
 func (c *client) handlePing(payload json.RawMessage) error {

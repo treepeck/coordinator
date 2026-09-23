@@ -31,24 +31,27 @@ func main() {
 	log.Print("Successfully connected to db.")
 
 	// Initialize database repository.
+	log.Print("Initializing database repositories...")
 	ar := db.NewSQLAuthRepo(pool)
+	gr := db.NewSQLGameRepo(pool)
+	log.Print("Successfully initialized database repositories.")
 
 	log.Print("Initializing services...")
 	authService := auth.NewService(cookieKey, ar)
 
-	ts, err := transport.InitService()
+	transportService, err := transport.InitService()
 	if err != nil {
 		log.Panic(err)
 	}
 
-	wsService := ws.InitService(ts.Open, ts.Close, ts.Poke, ts.Write, ts.Read)
+	wsService := ws.InitService(gr, transportService.Ipc)
 	log.Print("Successfully initialized services.")
 
 	log.Print("Connecting to JustChess...")
-	req := make(chan error)
-	ts.Open <- req
-	if err := <-req; err != nil {
-		log.Panic(err)
+	req := make(chan int, 1)
+	transportService.Ipc.Open <- req
+	if <-req != 1 {
+		log.Panic("Couldn't connect to JustChess.")
 	}
 	log.Print("Successfully connected to JustChess.")
 
