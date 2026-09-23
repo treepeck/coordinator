@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"encoding/gob"
 	"errors"
 	"github.com/treepeck/justchess/pkg/proto"
 	"log"
@@ -47,11 +46,7 @@ func InitService() (Service, error) {
 		return Service{}, err
 	}
 
-	// TODO: maybe extract it to some other place.
-	gob.Register(proto.Ping(0))
-	gob.Register(proto.Pong(0))
-	gob.Register(proto.Join(""))
-	gob.Register(proto.Leave(""))
+	proto.RegisterGOBTypes()
 
 	s := Service{
 		Ipc: Ipc{

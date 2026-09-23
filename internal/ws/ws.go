@@ -145,7 +145,7 @@ func (s Service) register(req joinReq) {
 	// Notify JustChess about player connection.
 	s.ipc.Write <- proto.InMessage{
 		PlayerId: req.id,
-		Payload: proto.Join(url),
+		Payload:  proto.Join(url),
 	}
 
 	log.Printf("register client %s\n", c.id)
@@ -165,7 +165,7 @@ func (s Service) unregister(c *client) {
 	// Notify JustChess about player disconnection.
 	s.ipc.Write <- proto.InMessage{
 		PlayerId: c.id,
-		Payload: proto.Leave(url),
+		Payload:  proto.Leave(url),
 	}
 
 	log.Printf("unregister client %s\n", c.id)

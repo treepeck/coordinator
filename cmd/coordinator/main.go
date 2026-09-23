@@ -8,8 +8,8 @@ import (
 	"github.com/treepeck/justchess/pkg/auth"
 	"github.com/treepeck/justchess/pkg/db"
 
-	"github.com/treepeck/coordinator/internal/ws"
 	"github.com/treepeck/coordinator/internal/transport"
+	"github.com/treepeck/coordinator/internal/ws"
 )
 
 func main() {
