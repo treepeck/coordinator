@@ -74,8 +74,6 @@ func (s Service) listen() {
 			s.openSocket(res)
 		case res := <-s.Ipc.Close:
 			s.closeSocket(res)
-		case m := <-s.Ipc.Write:
-			s.writeSocket(m)
 		}
 	}
 }
@@ -97,7 +95,7 @@ func (s Service) openSocket(res chan<- int) {
 		return
 	}
 
-	sock := initSocket(conn)
+	sock := initSocket(s.Ipc, conn)
 	s.sockets[sock] = struct{}{}
 	log.Printf("opened new TCP socket %v\n", sock)
 
@@ -122,26 +120,4 @@ func (s Service) closeSocket(res chan<- int) {
 	log.Printf("closed TCP socket %v\n", slowest)
 
 	res <- len(s.sockets)
-}
-
-func (s Service) writeSocket(m proto.InMessage) {
-	// TODO: proper load balancing between sockets.
-	// Right now simply find socket with the lowest latency and write message to it.
-	var fastest *socket
-	for sock := range s.sockets {
-		if fastest == nil || sock.latency.Load() < fastest.latency.Load() {
-			fastest = sock
-		}
-	}
-	if fastest == nil {
-		log.Print("no active TCP sockets")
-		return
-	}
-
-	fastest.send <- m
-
-	// If there are more than one message awaiting delivery, send them in batch.
-	for range len(s.Ipc.Write) {
-		fastest.send <- <-s.Ipc.Write
-	}
 }

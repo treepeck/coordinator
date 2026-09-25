@@ -7,6 +7,7 @@ import (
 	"github.com/treepeck/justchess/pkg/db"
 	"github.com/treepeck/justchess/pkg/proto"
 	"log"
+	"encoding/json"
 	"net/http"
 )
 
@@ -69,14 +70,17 @@ func InitService(gameRepo db.SQLGameRepo, ipc transport.Ipc) Service {
 
 func (s Service) RegisterRoutes(authService auth.Service, mux *http.ServeMux) {
 	// TODO: might want to have different endpoints for queue, player, and game spectator.
-	mux.HandleFunc("GET /handshake", authService.MustAuthorize(s.handshake))
+	mux.HandleFunc("GET /handshake/{kind}/{id}", authService.MustAuthorize(s.handshake))
 }
 
 func (s Service) handshake(rw http.ResponseWriter, r *http.Request) {
 	session, ok := r.Context().Value(auth.SessionKey).(auth.Session)
 	if !ok {
-		panic("request context is broken")
+		log.Print("request context is broken")
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
 	}
+
 	req := joinReq{
 		id:   session.Id,
 		rw:   rw,
@@ -115,6 +119,23 @@ func (s Service) route() {
 	for {
 		m := <-s.ipc.Read
 		log.Printf("recieved message from TCP conn: %v\n", m)
+
+		// TODO: send to specific client instead of broadcasting to all of them.
+		for c := range s.clients {
+			p, err := json.Marshal(m.Payload)
+			if err != nil {
+				log.Print(err)
+				continue
+			}
+
+			raw, _ := json.Marshal(message{
+				Payload: p,
+				Kind: kindCounter,
+			})
+
+
+			c.send <- raw
+		}
 	}
 }
 

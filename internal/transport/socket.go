@@ -16,32 +16,32 @@ const (
 
 // TODO: Reconnect.
 type socket struct {
+	ipc        Ipc
 	conn       *net.TCPConn
 	encoder    *gob.Encoder
 	decoder    *gob.Decoder
 	reader     *bufio.Reader
 	writer     *bufio.Writer
 	pingTicker *time.Ticker
-	send       chan proto.InMessage
 	// Network latency in milliseconds.
 	latency  *atomic.Int64
 	lastPing *atomic.Int64
 }
 
-func initSocket(conn *net.TCPConn) *socket {
+func initSocket(ipc Ipc, conn *net.TCPConn) *socket {
 	// Wrap connection with buffer to reduce the amount of syscalls.
 	// TODO: adjust the buffer size for peformance.
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 
 	s := &socket{
+		ipc:        ipc,
 		conn:       conn,
 		encoder:    gob.NewEncoder(w),
 		decoder:    gob.NewDecoder(r),
 		reader:     r,
 		writer:     w,
 		pingTicker: time.NewTicker(pingInterval),
-		send:       make(chan proto.InMessage, 256),
 		latency:    &atomic.Int64{},
 		lastPing:   &atomic.Int64{},
 	}
@@ -77,7 +77,8 @@ func (s *socket) read() {
 			}
 			log.Printf("latency: %d\n", lat)
 			s.latency.Store(lat)
-
+		case proto.Counter, proto.Redirect:
+			s.ipc.Read <- msg
 		default:
 			log.Printf("message has invalid type %v\n", t)
 		}
@@ -98,7 +99,7 @@ func (s *socket) write() {
 			log.Printf("ping")
 			s.lastPing.Store(time.Now().UnixMilli())
 
-		case m := <-s.send:
+		case m := <-s.ipc.Write:
 			msg = m
 		}
 

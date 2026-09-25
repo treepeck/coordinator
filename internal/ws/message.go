@@ -6,6 +6,7 @@ type messageKind int
 
 const (
 	kindPing messageKind = iota
+	kindCounter
 	kindMove
 )
 
