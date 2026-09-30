@@ -7,7 +7,6 @@ import (
 	"github.com/treepeck/justchess/pkg/db"
 	"github.com/treepeck/justchess/pkg/proto"
 	"log"
-	"encoding/json"
 	"net/http"
 )
 
@@ -39,7 +38,8 @@ type Service struct {
 	clients map[*client]string
 	ipc     transport.Ipc
 	// Inbout WebSocket messages.
-	inbound chan message
+	inbound chan proto.Message
+	encoder *proto.Encoder
 	// Incomming connections.
 	join chan joinReq
 	// Disconnected clients.
@@ -55,16 +55,15 @@ type Service struct {
 func InitService(gameRepo db.SQLGameRepo, ipc transport.Ipc) Service {
 	s := Service{
 		clients: make(map[*client]string, maxClients),
-		inbound: make(chan message),
+		inbound: make(chan proto.Message, 512),
 		join:    make(chan joinReq),
+		encoder: proto.NewEncoder(),
 		leave:   make(chan *client),
 		ipc:     ipc,
 		// Single TCP connection is opened during initialization.
 		tcpConnsCache: 1,
 	}
 	go s.listen()
-	go s.publish()
-	go s.route()
 	return s
 }
 
@@ -93,48 +92,18 @@ func (s Service) handshake(rw http.ResponseWriter, r *http.Request) {
 
 // listen listens for join and leave requests.
 func (s Service) listen() {
+	parts := proto.PreallocateDecodeBuff()
+
 	for {
 		select {
 		case req := <-s.join:
 			s.register(req)
 		case c := <-s.leave:
 			s.unregister(c)
-		}
-	}
-}
-
-// publish publishes inbound WebSocket messages to transport package.
-func (s Service) publish() {
-	for {
-		m := <-s.inbound
-		s.ipc.Write <- proto.InMessage{
-			PlayerId: m.clientId,
-			Payload:  m.Payload,
-		}
-	}
-}
-
-// route routes outbound messages to WebSocket [client]s.
-func (s Service) route() {
-	for {
-		m := <-s.ipc.Read
-		log.Printf("recieved message from TCP conn: %v\n", m)
-
-		// TODO: send to specific client instead of broadcasting to all of them.
-		for c := range s.clients {
-			p, err := json.Marshal(m.Payload)
-			if err != nil {
-				log.Print(err)
-				continue
-			}
-
-			raw, _ := json.Marshal(message{
-				Payload: p,
-				Kind: kindCounter,
-			})
-
-
-			c.send <- raw
+		case m := <-s.inbound:
+			s.ipc.Write <- s.encoder.Encode(m)
+		case encoded := <-s.ipc.Read:
+			s.handle(proto.Decode(parts, encoded, proto.MessageKind(encoded[0])))
 		}
 	}
 }
@@ -163,11 +132,12 @@ func (s Service) register(req joinReq) {
 	c := initClient(req.id, conn, s.leave, s.inbound)
 	s.clients[c] = url
 
-	// Notify JustChess about player connection.
-	s.ipc.Write <- proto.InMessage{
-		PlayerId: req.id,
-		Payload:  proto.Join(url),
-	}
+	// TODO: Notify JustChess about player connection.
+	s.ipc.Write <- s.encoder.Encode(proto.Message{
+		Id:      req.id,
+		Kind:    proto.KindJoin,
+		Payload: []byte(url),
+	})
 
 	log.Printf("register client %s\n", c.id)
 }
@@ -175,7 +145,7 @@ func (s Service) register(req joinReq) {
 func (s Service) unregister(c *client) {
 	url, ok := s.clients[c]
 	if !ok {
-		log.Printf("client %s is not registered but is being unregistered\n", c.id)
+		log.Printf("client %s is not registered in %s but is being unregistered\n", c.id, url)
 		return
 	}
 
@@ -183,13 +153,18 @@ func (s Service) unregister(c *client) {
 
 	s.adjustTCPConns()
 
-	// Notify JustChess about player disconnection.
-	s.ipc.Write <- proto.InMessage{
-		PlayerId: c.id,
-		Payload:  proto.Leave(url),
-	}
+	// TODO: Notify JustChess about player disconnection.
+	s.ipc.Write <- s.encoder.Encode(proto.Message{
+		Id:      c.id,
+		Kind:    proto.KindLeave,
+		Payload: []byte(url),
+	})
 
 	log.Printf("unregister client %s\n", c.id)
+}
+
+func (s Service) handle(m proto.Message) {
+	log.Printf("got a message from JustChess: %v\n", m)
 }
 
 // adjustTCPConns adjusts the amount of opened TCP connections to the amount

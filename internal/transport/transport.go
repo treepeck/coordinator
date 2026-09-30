@@ -2,10 +2,10 @@ package transport
 
 import (
 	"errors"
-	"github.com/treepeck/justchess/pkg/proto"
 	"log"
 	"net"
 	"os"
+	"github.com/treepeck/justchess/pkg/proto"
 	"strconv"
 )
 
@@ -21,9 +21,9 @@ type Ipc struct {
 	// TODO: might want to delete the least used connection.
 	Close chan chan int
 	// Write is used to write messages to TCP connection pool.
-	Write chan proto.InMessage
+	Write chan []byte
 	// Read is used to read messages from TCP connection pool.
-	Read chan proto.OutMessage
+	Read chan []byte
 }
 
 // Service manages the dynamic pool of TCP connections with the JustChess server.
@@ -46,18 +46,16 @@ func InitService() (Service, error) {
 		return Service{}, err
 	}
 
-	proto.RegisterGOBTypes()
-
 	s := Service{
 		Ipc: Ipc{
 			Open:  make(chan chan int),
 			Close: make(chan chan int),
-			Write: make(chan proto.InMessage, 256),
-			Read:  make(chan proto.OutMessage, 256),
+			Write: make(chan []byte, 256),
+			Read:  make(chan []byte, 256),
 		},
 		addr:    addr,
 		port:    port,
-		sockets: make(map[*socket]struct{}, proto.MaxConns),
+		sockets: make(map[*socket]struct{}, 1),
 	}
 
 	go s.listen()
@@ -116,7 +114,8 @@ func (s Service) closeSocket(res chan<- int) {
 		return
 	}
 	delete(s.sockets, slowest)
-	slowest.conn.Close() // TODO: might want to handle error.
+	// TODO: might want to handle error.
+	slowest.conn.Close()
 	log.Printf("closed TCP socket %v\n", slowest)
 
 	res <- len(s.sockets)

@@ -3,6 +3,7 @@ package ws
 import (
 	"encoding/json"
 	"github.com/gorilla/websocket"
+	"github.com/treepeck/justchess/pkg/proto"
 	"log"
 	"time"
 )
@@ -25,9 +26,9 @@ type client struct {
 	// between multiple concurrent writers. The "gorilla/websocket"
 	// package allows only one concurrent writer at time.
 	send chan []byte
-	// Publish inbound message to server.
-	inbound chan message
-	// Notify the server about disconnection.
+	// Publish inbound [message] to [Service].
+	inbound chan proto.Message
+	// Notify the [Service] about disconnection.
 	leave chan *client
 	// Network latency in milliseconds. It is reported by client so
 	// shoudln't be trusted. Used only to render the UI connection bar.
@@ -37,7 +38,7 @@ type client struct {
 
 // initClient initializes the client, sets the connection properties,
 // and runs the client's goroutines.
-func initClient(id string, conn *websocket.Conn, leave chan *client, inbound chan message) *client {
+func initClient(id string, conn *websocket.Conn, leave chan *client, inbound chan proto.Message) *client {
 	c := &client{
 		id:      id,
 		conn:    conn,
@@ -75,21 +76,21 @@ func (c *client) read() {
 			break
 		}
 
-		var msg message
-		if err := json.Unmarshal(raw, &msg); err != nil {
+		var m proto.Message
+		if err := json.Unmarshal(raw, &m); err != nil {
 			log.Printf("client %s sends invalid message: %v\n", c.id, err)
 			break
 		}
 
-		switch msg.Kind {
+		switch m.Kind {
 		// Immediately handle ping messages.
-		case kindPing:
-			if err := c.handlePing(msg.Payload); err != nil {
+		case proto.KindPing:
+			if err := c.handlePing(m.Payload); err != nil {
 				break
 			}
 		default:
-			msg.clientId = c.id
-			c.inbound <- msg
+			m.Id = c.id
+			c.inbound <- m
 		}
 	}
 	c.cleanup()
